@@ -38,6 +38,7 @@ from markdown.extensions import codehilite, fenced_code, tables
 import markdown.extensions.extra
 import re
 
+from query_analyzer import IterativeChatManager, QueryAnalysisResult
 
 class ConfigManager:
     """YAML-based configuration management"""
@@ -462,8 +463,7 @@ class PromptConfigDialog(QDialog):
     def get_prompts(self):
         """Get the edited prompts"""
         return {prompt: editor.toPlainText() for prompt, editor in self.prompt_editors.items()}
-
-
+    
 class OllamaWorker(QThread):
     """Worker thread for Ollama API communication"""
 
@@ -519,6 +519,119 @@ class OllamaWorker(QThread):
     def run(self):
         """Run the async request in thread"""
         asyncio.run(self.send_request())
+
+
+class IterativeOllamaWorker(QThread):
+    """Enhanced worker thread for iterative chat processing"""
+
+    response_received = Signal(str)
+    error_occurred = Signal(str)
+    stream_chunk = Signal(str)
+    status_updated = Signal(str)  # New signal for status updates
+    analysis_completed = Signal(dict)  # Signal when analysis is complete
+
+    def __init__(self, config_manager, user_query, conversation_context=None):
+        super().__init__()
+        self.config_manager = config_manager
+        self.user_query = user_query
+        self.conversation_context = conversation_context or []
+
+        # Create the iterative chat manager
+        self.chat_manager = IterativeChatManager(config_manager, status_callback=self.status_updated.emit)
+
+    async def process_query(self):
+        """Process the query through the iterative system"""
+        try:
+            result = await self.chat_manager.process_query(self.user_query, self.conversation_context)
+
+            # Emit the analysis for UI display
+            self.analysis_completed.emit(
+                {
+                    "analysis": result["analysis"],
+                    "search_results": result["search_results"],
+                    "steps": result["steps_performed"],
+                }
+            )
+
+            # Emit the final response
+            self.response_received.emit(result["response"])
+
+        except Exception as e:
+            self.error_occurred.emit(f"Processing error: {str(e)}")
+
+    def run(self):
+        """Run the async processing in thread"""
+        asyncio.run(self.process_query())
+
+
+class AnalysisDisplayWidget(QWidget):
+    """Widget to display query analysis and steps"""
+
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Analysis section
+        analysis_group = QGroupBox("Query Analysis")
+        analysis_layout = QVBoxLayout(analysis_group)
+
+        self.reasoning_label = QLabel("No analysis yet")
+        self.reasoning_label.setWordWrap(True)
+        self.reasoning_label.setStyleSheet("font-style: italic; color: #666;")
+        analysis_layout.addWidget(QLabel("Reasoning:"))
+        analysis_layout.addWidget(self.reasoning_label)
+
+        self.confidence_label = QLabel("Confidence: N/A")
+        self.confidence_label.setStyleSheet("font-weight: bold;")
+        analysis_layout.addWidget(self.confidence_label)
+
+        layout.addWidget(analysis_group)
+
+        # Steps section
+        steps_group = QGroupBox("Processing Steps")
+        steps_layout = QVBoxLayout(steps_group)
+
+        self.steps_text = QTextEdit()
+        self.steps_text.setMaximumHeight(150)
+        self.steps_text.setReadOnly(True)
+        self.steps_text.setFont(QFont("Consolas", 9))
+        steps_layout.addWidget(self.steps_text)
+
+        layout.addWidget(steps_group)
+
+        # Current status
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #0066cc; font-weight: bold;")
+        layout.addWidget(self.status_label)
+
+    def update_analysis(self, analysis_data):
+        """Update the analysis display"""
+        analysis = analysis_data["analysis"]
+
+        # Update reasoning
+        self.reasoning_label.setText(analysis.reasoning)
+
+        # Update confidence with color coding
+        confidence = analysis.confidence
+        self.confidence_label.setText(f"Confidence: {confidence:.1%}")
+
+        if confidence >= 0.8:
+            color = "green"
+        elif confidence >= 0.5:
+            color = "orange"
+        else:
+            color = "red"
+        self.confidence_label.setStyleSheet(f"font-weight: bold; color: {color};")
+
+        # Update steps
+        self.steps_text.setPlainText(analysis_data["steps"])
+
+    def update_status(self, status):
+        """Update the current status"""
+        self.status_label.setText(status)
 
 
 class MarkdownDisplay(QWebEngineView):
@@ -1061,12 +1174,157 @@ class OllamaRAGGui(QMainWindow):
 
         event.accept()
 
+class OllamaRAGGuiExtended(OllamaRAGGui):
+    """Extended GUI with iterative chat support"""
+
+    def setup_ui(self):
+        """Extended UI setup with analysis display"""
+        # Call the parent setup_ui first
+        super().setup_ui()
+
+        # Add the analysis display to the right panel
+        # Find the right_layout (this assumes you can access it)
+        right_panel = self.centralWidget().layout().itemAt(1).widget()
+        right_layout = right_panel.layout()
+
+        # Insert analysis widget before the splitter
+        self.analysis_display = AnalysisDisplayWidget()
+        right_layout.insertWidget(0, self.analysis_display)
+
+        # Add toggle for iterative mode
+        left_panel = self.centralWidget().layout().itemAt(0).widget()
+        left_layout = left_panel.layout()
+
+        # Insert after the stream button
+        self.iterative_button = QPushButton("Iterative Mode: ON")
+        self.iterative_button.setCheckable(True)
+        self.iterative_button.setChecked(True)
+        self.iterative_button.clicked.connect(self.toggle_iterative_mode)
+
+        # Find the stream button position and insert after it
+        for i in range(left_layout.count()):
+            widget = left_layout.itemAt(i).widget()
+            if hasattr(widget, "text") and "Stream:" in widget.text():
+                left_layout.insertWidget(i + 1, self.iterative_button)
+                break
+
+    def toggle_iterative_mode(self):
+        """Toggle iterative processing mode"""
+        is_iterative = self.iterative_button.isChecked()
+        self.iterative_button.setText(f"Iterative Mode: {'ON' if is_iterative else 'OFF'}")
+
+        # Show/hide analysis display
+        self.analysis_display.setVisible(is_iterative)
+
+    def send_message(self):
+        """Enhanced send_message with iterative processing"""
+        if not self.ollama_running:
+            self.markdown_display.update_content(
+                "**Error:** Ollama is not running. Please start Ollama and wait for connection."
+            )
+            return
+
+        message = self.input_text.toPlainText().strip()
+        if not message:
+            return
+
+        chat_model = self.config_manager.get("ollama.models.chat", "")
+        if not chat_model:
+            self.markdown_display.update_content("**Error:** No chat model configured. Please configure models first.")
+            return
+
+        if chat_model not in self.available_models:
+            self.markdown_display.update_content(
+                f"**Error:** Model '{chat_model}' is not available. Please check your model configuration."
+            )
+            return
+
+        # Add user message to conversation
+        self.current_conversation.append({"role": "user", "content": message})
+
+        # Clear previous output and show user message
+        self.markdown_display.update_content(f"**You:** {message}\n\n")
+        self.raw_output.clear()
+        self.json_output.clear()
+
+        # Clear input
+        self.input_text.clear()
+
+        # Show progress
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.send_button.setEnabled(False)
+
+        # Choose processing mode
+        if self.iterative_button.isChecked():
+            # Use iterative processing
+            self.current_worker = IterativeOllamaWorker(
+                self.config_manager,
+                message,
+                self.current_conversation[:-1],  # Don't include the current message
+            )
+
+            # Connect new signals
+            self.current_worker.status_updated.connect(self.analysis_display.update_status)
+            self.current_worker.analysis_completed.connect(self.analysis_display.update_analysis)
+
+        else:
+            # Use original processing
+            stream = self.stream_button.isChecked()
+            system_prompt = self.config_manager.get("prompts.chat", "")
+
+            self.current_worker = OllamaWorker(chat_model, message, stream, system_prompt)
+            self.current_worker.stream_chunk.connect(self.on_stream_chunk)
+
+        # Connect common signals
+        self.current_worker.response_received.connect(self.on_response_received)
+        self.current_worker.error_occurred.connect(self.on_error)
+        self.current_worker.start()
+
+    def on_response_received(self, response):
+        """Enhanced response handler"""
+        # Update markdown display with assistant response
+        current_content = self.markdown_display.current_content
+        if not current_content.endswith("**Assistant:** "):
+            self.markdown_display.append_content("**Assistant:** ")
+
+        self.markdown_display.append_content(response)
+
+        # Add assistant response to conversation
+        self.current_conversation.append({"role": "assistant", "content": response})
+
+        # Auto-save if enabled
+        if self.config_manager.get("ui.auto_save_conversations", True):
+            chat_model = self.config_manager.get("ollama.models.chat", "")
+            self.config_manager.save_conversation(self.current_conversation, chat_model)
+            self.conversation_list.refresh_conversations()
+
+        # Update debug info
+        model_used = self.config_manager.get("ollama.models.chat", "unknown")
+        mode = "Iterative" if self.iterative_button.isChecked() else "Direct"
+
+        self.json_output.setPlainText(
+            f"Response length: {len(response)} characters\n"
+            f"Model: {model_used}\n"
+            f"Mode: {mode}\n"
+            f"Conversation length: {len(self.current_conversation)} messages"
+        )
+
+        # Hide progress and re-enable send
+        self.progress_bar.setVisible(False)
+        chat_model = self.config_manager.get("ollama.models.chat", "")
+        self.send_button.setEnabled(bool(chat_model and chat_model in self.available_models))
+
+        # Update analysis status
+        if hasattr(self, "analysis_display"):
+            self.analysis_display.update_status("Complete")
+
 
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    window = OllamaRAGGui()
+    window = OllamaRAGGuiExtended()
     window.show()
 
     sys.exit(app.exec())
