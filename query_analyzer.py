@@ -195,9 +195,9 @@ Remember: The goal is to gather information that will enable providing the most 
             },
         }
 
-        timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
+        # timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession() as session:
             async with session.post(f"{self.ollama_url}/api/chat", json=payload) as response:
                 if response.status == 200:
                     data = await response.json()
