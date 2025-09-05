@@ -160,30 +160,49 @@ class AggressiveQueryAnalyzer:
 
         # Determine search types
         actions = []
+        max_actions = self.config_manager.get("analysis.max_search_actions", 3)
 
         # Web search for most queries
         actions.append(SearchAction(action_type=SearchType.WEB_SEARCH, query=user_query, priority=1))
 
-        # Code search for programming queries
-        if any(
-            term in query_lower
-            for term in [
-                "code",
-                "function",
-                "class",
-                "import",
-                "debug",
-                "error",
-                "programming",
-                "python",
-                "javascript",
-                "react",
-                "nodejs",
-            ]
-        ):
-            actions.append(
-                SearchAction(action_type=SearchType.CODEBASE_SEARCH, query=f"code examples {user_query}", priority=2)
-            )
+        # Programming queries need both web AND codebase search
+        programming_terms = [
+            "code",
+            "function",
+            "class",
+            "import",
+            "debug",
+            "error",
+            "programming",
+            "python",
+            "javascript",
+            "react",
+            "nodejs",
+            "api",
+            "library",
+            "framework",
+            "syntax",
+            "example",
+        ]
+
+        if any(term in query_lower for term in programming_terms):
+            # Add web search for APIs/documentation if not already added
+            if len(actions) == 0 or actions[0].action_type != SearchType.WEB_SEARCH:
+                actions.insert(
+                    0,
+                    SearchAction(
+                        action_type=SearchType.WEB_SEARCH, query=f"{user_query} API documentation examples", priority=1
+                    ),
+                )
+
+            # Add codebase search if within max limit
+            if len(actions) < max_actions:
+                actions.append(
+                    SearchAction(action_type=SearchType.CODEBASE_SEARCH, query=f"code examples {user_query}", priority=1)
+                )
+
+        # Limit to max_actions
+        actions = actions[:max_actions]
 
         return QueryAnalysisResult(
             original_query=user_query,
