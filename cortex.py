@@ -38,8 +38,8 @@ from markdown.extensions import codehilite, fenced_code, tables
 import markdown.extensions.extra
 import re
 
-from query_analyzer import IterativeChatManager, QueryAnalysisResult, QueryAnalyzer
 from knowledge_cache import CachedIterativeChatManager
+from query_analyzer import EnhancedLLMQueryAnalyzer
 
 class ConfigManager:
     """YAML-based configuration management"""
@@ -605,7 +605,7 @@ Analysis: {analysis.reasoning}
 Please provide a comprehensive answer. If searches were attempted but not implemented, acknowledge this and provide the best answer possible from your knowledge."""
 
         try:
-            analyzer = QueryAnalyzer(self.config_manager)
+            analyzer = EnhancedLLMQueryAnalyzer(self.config_manager)
             response = await analyzer._call_ollama(chat_model, prompt)
             return response
         except Exception as e:
