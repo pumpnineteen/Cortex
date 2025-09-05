@@ -4,10 +4,9 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 
-from query_analyzer import QueryAnalyzer, QueryAnalysisResult, SearchAction, SearchType
+from query_analyzer import QueryAnalysisResult, SearchAction, SearchType
 
 
 @dataclass

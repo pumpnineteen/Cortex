@@ -1,5 +1,4 @@
 import json
-import asyncio
 import aiohttp
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -197,6 +196,7 @@ Guidelines:
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Fallback: try to determine search need from keywords
+            print(f"JSON parsing error: {e}")
             return self._fallback_analysis(original_query, response)
 
     def _fallback_analysis(self, query: str, response: str) -> QueryAnalysisResult:
