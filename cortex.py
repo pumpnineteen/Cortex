@@ -538,11 +538,19 @@ class IterativeOllamaWorker(QThread):
         self.user_query = user_query
         self.conversation_context = conversation_context or []
 
+    def _log_callback(self, log_type: str, message: str, details: str = ""):
+        """Callback to emit log entries via Qt signals"""
+        self.log_entry.emit(log_type, message, details)
+
     async def process_query(self):
         """Process the query through the aggressive search system with detailed logging"""
         try:
-            # Create chat manager with caching and logging
-            chat_manager = CachedIterativeChatManager(self.config_manager, status_callback=self.status_updated.emit)
+            # Create chat manager with caching and logging - pass the callback!
+            chat_manager = CachedIterativeChatManager(
+                self.config_manager,
+                status_callback=self.status_updated.emit,
+                log_callback=self._log_callback,  # Pass our callback method
+            )
 
             # Process with aggressive search strategy
             result = await chat_manager.process_query(self.user_query, self.conversation_context)
@@ -566,66 +574,6 @@ class IterativeOllamaWorker(QThread):
             error_msg = f"Processing error: {str(e)}"
             self.log_entry.emit("ERROR", "Aggressive search processing failed", full_traceback)
             self.error_occurred.emit(error_msg)
-
-    async def _execute_search_action(self, action):
-        """Execute a specific search action (placeholder implementations)"""
-        if action.action_type.value == "WEB_SEARCH":
-            return {"type": "web", "status": "not_implemented", "query": action.query}
-        elif action.action_type.value == "CODEBASE_SEARCH":
-            return {"type": "codebase", "status": "not_implemented", "query": action.query}
-        elif action.action_type.value == "FILE_ANALYSIS":
-            return {"type": "file", "status": "not_implemented", "query": action.query}
-        else:
-            return {"type": "unknown", "status": "skipped"}
-
-    async def _generate_final_response(self, user_query: str, analysis, search_results: dict) -> str:
-        """Generate the final response using the chat model"""
-        chat_model = self.config_manager.get("ollama.models.chat", "")
-        if not chat_model:
-            raise Exception("No chat model configured")
-
-        # Build context from search results
-        context = ""
-        if search_results:
-            context += "Search Results:\n"
-            for key, result in search_results.items():
-                action = result["action"]
-                result_data = result["result"]
-                context += f"- {action.action_type.value}: {action.query}\n"
-                context += f"  Status: {result_data.get('status', 'unknown')}\n"
-                if result_data.get("status") == "not_implemented":
-                    context += "  (Search functionality not yet implemented)\n"
-
-        prompt = f"""Based on the user's query and any available search context, provide a helpful response.
-
-User Query: {user_query}
-
-Analysis: {analysis.reasoning}
-
-{context}
-
-Please provide a comprehensive answer. If searches were attempted but not implemented, acknowledge this and provide the best answer possible from your knowledge."""
-
-        try:
-            analyzer = EnhancedLLMQueryAnalyzer(self.config_manager)
-            response = await analyzer._call_ollama(chat_model, prompt)
-            return response
-        except Exception as e:
-            raise Exception(f"Error calling chat model: {str(e)}")
-
-    def _format_steps(self, analysis, search_results: dict) -> str:
-        """Format the steps performed for display"""
-        steps = [f"1. Query Analysis: {analysis.reasoning}"]
-
-        if analysis.needs_search:
-            steps.append(f"2. Search Actions: {len(analysis.search_actions)} planned")
-            for i, (key, result) in enumerate(search_results.items(), 1):
-                action = result["action"]
-                status = result["result"].get("status", "unknown")
-                steps.append(f"   {i}. {action.action_type.value}: {status}")
-
-        steps.append("3. Generated final response")
-        return "\n".join(steps)
 
     def run(self):
         """Run the async processing in thread"""
@@ -1423,7 +1371,7 @@ class OllamaRAGGuiExtended(OllamaRAGGui):
             # Clear previous log and start fresh
             self.analysis_display.clear_log()
 
-            # Use iterative processing
+            # Use iterative processing with log callback
             self.current_worker = IterativeOllamaWorker(
                 self.config_manager,
                 message,

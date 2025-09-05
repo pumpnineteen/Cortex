@@ -104,11 +104,18 @@ class SearchCache:
 class CachedIterativeChatManager:
     """Chat manager with aggressive search and caching"""
 
-    def __init__(self, config_manager, status_callback=None):
+    def __init__(self, config_manager, status_callback=None, log_callback=None):
         self.config_manager = config_manager
-        self.analyzer = EnhancedLLMQueryAnalyzer(config_manager)
+        # Pass log_callback to analyzer
+        self.analyzer = EnhancedLLMQueryAnalyzer(config_manager, log_callback=log_callback)
         self.cache = SearchCache(config_manager)
         self.status_callback = status_callback
+        self.log_callback = log_callback
+
+    def _log(self, log_type: str, message: str, details: str = ""):
+        """Log message via callback if available"""
+        if self.log_callback:
+            self.log_callback(log_type, message, details)
 
     async def process_query(self, user_query: str, conversation_context: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Process query with aggressive search and caching"""
@@ -120,7 +127,11 @@ class CachedIterativeChatManager:
             self.cache.cleanup_expired()
 
         # Analyze query
+        self._log("INFO", "Starting query analysis", f"Query: {user_query[:100]}...")
         analysis = await self.analyzer.analyze_query(user_query, conversation_context)
+        self._log(
+            "ANALYSIS", "Query analysis completed", f"Type: {analysis.query_type}, Confidence: {analysis.confidence:.2f}"
+        )
 
         self._update_status(f"Analysis: {analysis.reasoning}")
 
@@ -128,6 +139,7 @@ class CachedIterativeChatManager:
         search_results = {}
         if analysis.needs_search:
             self._update_status(f"Executing {len(analysis.search_actions)} search actions...")
+            self._log("INFO", f"Executing {len(analysis.search_actions)} search actions")
 
             for i, action in enumerate(analysis.search_actions, 1):
                 # Check cache first
@@ -135,6 +147,7 @@ class CachedIterativeChatManager:
 
                 if cached_result:
                     self._update_status(f"Step {i}: Using cached {action.action_type.value}")
+                    self._log("INFO", f"Using cached result for {action.action_type.value}", f"Query: {action.query}")
                     search_results[f"search_{i}"] = {
                         "action": action,
                         "result": cached_result.results,
@@ -143,6 +156,7 @@ class CachedIterativeChatManager:
                     }
                 else:
                     self._update_status(f"Step {i}: {action.action_type.value} - {action.query}")
+                    self._log("INFO", f"Executing fresh {action.action_type.value}", f"Query: {action.query}")
 
                     # Execute search
                     result = await self._execute_search_action(action)
@@ -151,6 +165,7 @@ class CachedIterativeChatManager:
                     if result.get("status") not in ["error", "not_implemented"]:
                         ttl = self._get_cache_ttl(action.action_type.value)
                         self.cache.store(action.action_type.value, action.query, result, ttl)
+                        self._log("INFO", f"Cached result for {action.action_type.value}", f"TTL: {ttl}h")
 
                     search_results[f"search_{i}"] = {"action": action, "result": result, "cached": False}
 
@@ -159,6 +174,7 @@ class CachedIterativeChatManager:
         final_response = await self._generate_final_response(user_query, analysis, search_results)
 
         self._update_status("Complete")
+        self._log("SUCCESS", "Query processing completed", f"Response length: {len(final_response)} chars")
 
         return {
             "analysis": analysis,
