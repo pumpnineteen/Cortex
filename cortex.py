@@ -39,6 +39,7 @@ import markdown.extensions.extra
 import re
 
 from query_analyzer import IterativeChatManager, QueryAnalysisResult, QueryAnalyzer
+from knowledge_cache import CachedIterativeChatManager
 
 class ConfigManager:
     """YAML-based configuration management"""
@@ -537,61 +538,31 @@ class IterativeOllamaWorker(QThread):
         self.conversation_context = conversation_context or []
 
     async def process_query(self):
-        """Process the query through the iterative system with detailed logging"""
+        """Process the query through the aggressive search system with detailed logging"""
         try:
-            # Create chat manager with logging callback
-            chat_manager = IterativeChatManager(self.config_manager, status_callback=self.status_updated.emit)
+            # Create chat manager with caching and logging
+            chat_manager = CachedIterativeChatManager(self.config_manager, status_callback=self.status_updated.emit)
 
-            # Step 1: Analyze query
-            self.log_entry.emit("INFO", "Starting query analysis", f"Query: '{self.user_query}'")
+            # Process with aggressive search strategy
+            result = await chat_manager.process_query(self.user_query, self.conversation_context)
 
-            analyzer = QueryAnalyzer(self.config_manager)
-            analysis = await analyzer.analyze_query(self.user_query, self.conversation_context)
+            # Log cache statistics
+            cached_searches = sum(1 for r in result.get("search_results", {}).values() if r.get("cached"))
+            fresh_searches = len(result.get("search_results", {})) - cached_searches
 
-            # Step 2: Execute searches if needed
-            search_results = {}
-            if analysis.needs_search:
-                self.log_entry.emit("INFO", f"Executing {len(analysis.search_actions)} search actions", "")
-
-                for i, action in enumerate(analysis.search_actions, 1):
-                    self.status_updated.emit(f"Step {i}: {action.action_type.value} - {action.query}")
-
-                    try:
-                        result = await self._execute_search_action(action)
-                        search_results[f"search_{i}"] = {"action": action, "result": result}
-
-                        # Log the search result
-                        self.log_entry.emit(
-                            "INFO",
-                            f"Search {i} completed",
-                            f"Type: {action.action_type.value} | Status: {result.get('status', 'unknown')}",
-                        )
-                    except Exception as e:
-                        error_result = {"type": action.action_type.value, "status": "error", "error": str(e)}
-                        search_results[f"search_{i}"] = {"action": action, "result": error_result}
-                        self.log_entry.emit("ERROR", f"Search {i} failed", str(e))
-
-            # Step 3: Generate final response
-            self.status_updated.emit("Generating response...")
-            self.log_entry.emit("INFO", "Generating final response", "Using chat model")
-
-            final_response = await self._generate_final_response(self.user_query, analysis, search_results)
+            if cached_searches > 0:
+                self.log_entry.emit("INFO", f"Used {cached_searches} cached results, {fresh_searches} fresh searches", "")
 
             # Emit results
-            self.analysis_completed.emit(
-                {
-                    "analysis": analysis,
-                    "search_results": search_results,
-                    "steps": self._format_steps(analysis, search_results),
-                }
+            self.analysis_completed.emit(result)
+            self.response_received.emit(result["response"])
+            self.log_entry.emit(
+                "SUCCESS", "Aggressive search processing completed", f"Response: {len(result['response'])} chars"
             )
-
-            self.response_received.emit(final_response)
-            self.log_entry.emit("SUCCESS", "Query processing completed", f"Response length: {len(final_response)} chars")
 
         except Exception as e:
             error_msg = f"Processing error: {str(e)}"
-            self.log_entry.emit("ERROR", "Query processing failed", str(e))
+            self.log_entry.emit("ERROR", "Aggressive search processing failed", str(e))
             self.error_occurred.emit(error_msg)
 
     async def _execute_search_action(self, action):
