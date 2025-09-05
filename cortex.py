@@ -37,6 +37,7 @@ import markdown
 from markdown.extensions import codehilite, fenced_code, tables
 import markdown.extensions.extra
 import re
+import traceback
 
 from knowledge_cache import CachedIterativeChatManager
 from query_analyzer import EnhancedLLMQueryAnalyzer
@@ -561,8 +562,9 @@ class IterativeOllamaWorker(QThread):
             )
 
         except Exception as e:
+            full_traceback = traceback.format_exc()
             error_msg = f"Processing error: {str(e)}"
-            self.log_entry.emit("ERROR", "Aggressive search processing failed", str(e))
+            self.log_entry.emit("ERROR", "Aggressive search processing failed", full_traceback)
             self.error_occurred.emit(error_msg)
 
     async def _execute_search_action(self, action):

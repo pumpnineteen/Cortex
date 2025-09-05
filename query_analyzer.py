@@ -1,11 +1,12 @@
 import json
 import aiohttp
 from typing import List, Dict, Any, Optional
+from PySide6.QtCore import Signal
 from dataclasses import dataclass
 from enum import Enum
 import re
 from datetime import datetime
-
+import traceback
 
 class SearchType(Enum):
     """Types of searches that can be performed"""
@@ -44,13 +45,15 @@ class QueryAnalysisResult:
 
 class EnhancedLLMQueryAnalyzer:
     """LLM-powered query analyzer that uses reasoning instead of pattern matching"""
+    log_entry = Signal(str, str, str)
 
     def __init__(self, config_manager, ollama_url="http://localhost:11434"):
         self.config_manager = config_manager
         self.ollama_url = ollama_url
+        
 
     async def analyze_query(self, user_query: str, conversation_context: Optional[List[Dict]] = None) -> QueryAnalysisResult:
-        """Analyze a user query using LLM reasoning to determine search needs"""
+        """Aggressively determine search needs with proper QueryAnalysisResult format"""
 
         # Get the analysis model
         analysis_model = self.config_manager.get("ollama.models.search_extract", "") or self.config_manager.get(
@@ -63,15 +66,19 @@ class EnhancedLLMQueryAnalyzer:
         try:
             # Build comprehensive analysis prompt
             analysis_prompt = self._build_enhanced_analysis_prompt(user_query, conversation_context)
+            self.log_entry.emit("INFO", "Analysis Prompt", analysis_prompt[:500] + "...")
 
             # Get analysis from LLM
             response = await self._call_ollama(analysis_model, analysis_prompt)
+            self.log_entry.emit("INFO", "Analysis Response", response[:500] + "...")
 
             # Parse and validate the response
             return self._parse_enhanced_analysis_response(user_query, response)
 
         except Exception as e:
+            full_traceback = traceback.format_exc()
             print(f"LLM Query analysis error: {e}")
+            print(full_traceback)
             return self._create_fallback_result(user_query, f"Analysis failed: {str(e)}")
 
     def _build_enhanced_analysis_prompt(self, query: str, context: Optional[List[Dict]] = None) -> str:

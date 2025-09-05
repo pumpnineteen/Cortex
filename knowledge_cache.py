@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
-from query_analyzer import QueryAnalysisResult, SearchAction, SearchType
+from query_analyzer import EnhancedLLMQueryAnalyzer, SearchAction, SearchType
 
 
 @dataclass
@@ -101,124 +101,12 @@ class SearchCache:
             conn.execute("DELETE FROM search_cache WHERE expires_at < ?", (time.time(),))
 
 
-class AggressiveQueryAnalyzer:
-    """Analyzer that searches for most queries, uses caching"""
-
-    def __init__(self, config_manager):
-        self.config_manager = config_manager
-        self.cache = SearchCache(config_manager)
-
-        # Categories that should always search
-        self.always_search_patterns = [
-            r"\b(latest|recent|current|new|update|2024|2025)\b",
-            r"\b(how to|tutorial|guide|example|implement)\b",
-            r"\b(best|comparison|vs|versus|recommend)\b",
-            r"\b(news|release|announcement)\b",
-            r"\b(documentation|docs|reference)\b",
-        ]
-
-        # Categories that rarely need search
-        self.rarely_search_patterns = [
-            r"\b(hello|hi|thanks|thank you)\b",
-            r"\b(what is|define|definition)\b" + r"(?!.*(latest|current|new))",
-            r"\b(math|calculate|solve)\b",
-        ]
-
-    async def analyze_query(self, user_query: str, conversation_context: Optional[List[Dict]] = None) -> QueryAnalysisResult:
-        """Aggressively determine search needs"""
-
-        import re
-
-        query_lower = user_query.lower()
-
-        # Check for rarely search patterns first
-        rarely_search = any(re.search(pattern, query_lower, re.IGNORECASE) for pattern in self.rarely_search_patterns)
-
-        if rarely_search and len(user_query.split()) < 8:
-            return QueryAnalysisResult(
-                original_query=user_query,
-                needs_search=False,
-                search_actions=[],
-                reasoning="Simple query that doesn't benefit from search",
-                confidence=0.9,
-            )
-
-        # Check for always search patterns
-        always_search = any(re.search(pattern, query_lower, re.IGNORECASE) for pattern in self.always_search_patterns)
-
-        # Default: search for most substantial queries
-        should_search = always_search or len(user_query.split()) > 3
-
-        if not should_search:
-            return QueryAnalysisResult(
-                original_query=user_query,
-                needs_search=False,
-                search_actions=[],
-                reasoning="Short query likely answerable from knowledge",
-                confidence=0.7,
-            )
-
-        # Determine search types
-        actions = []
-        max_actions = self.config_manager.get("analysis.max_search_actions", 3)
-
-        # Web search for most queries
-        actions.append(SearchAction(action_type=SearchType.WEB_SEARCH, query=user_query, priority=1))
-
-        # Programming queries need both web AND codebase search
-        programming_terms = [
-            "code",
-            "function",
-            "class",
-            "import",
-            "debug",
-            "error",
-            "programming",
-            "python",
-            "javascript",
-            "react",
-            "nodejs",
-            "api",
-            "library",
-            "framework",
-            "syntax",
-            "example",
-        ]
-
-        if any(term in query_lower for term in programming_terms):
-            # Add web search for APIs/documentation if not already added
-            if len(actions) == 0 or actions[0].action_type != SearchType.WEB_SEARCH:
-                actions.insert(
-                    0,
-                    SearchAction(
-                        action_type=SearchType.WEB_SEARCH, query=f"{user_query} API documentation examples", priority=1
-                    ),
-                )
-
-            # Add codebase search if within max limit
-            if len(actions) < max_actions:
-                actions.append(
-                    SearchAction(action_type=SearchType.CODEBASE_SEARCH, query=f"code examples {user_query}", priority=1)
-                )
-
-        # Limit to max_actions
-        actions = actions[:max_actions]
-
-        return QueryAnalysisResult(
-            original_query=user_query,
-            needs_search=True,
-            search_actions=actions,
-            reasoning=f"Aggressive search strategy - {'always search pattern' if always_search else 'substantial query'}",
-            confidence=0.8,
-        )
-
-
 class CachedIterativeChatManager:
     """Chat manager with aggressive search and caching"""
 
     def __init__(self, config_manager, status_callback=None):
         self.config_manager = config_manager
-        self.analyzer = AggressiveQueryAnalyzer(config_manager)
+        self.analyzer = EnhancedLLMQueryAnalyzer(config_manager)
         self.cache = SearchCache(config_manager)
         self.status_callback = status_callback
 
@@ -333,10 +221,7 @@ Analysis: {analysis.reasoning}
 Provide a thorough answer that incorporates any relevant information from the searches."""
 
         try:
-            # Use the existing QueryAnalyzer's _call_ollama method
-            from query_analyzer import QueryAnalyzer
-
-            analyzer = QueryAnalyzer(self.config_manager)
+            analyzer = EnhancedLLMQueryAnalyzer(self.config_manager)
             response = await analyzer._call_ollama(chat_model, prompt)
             return response
         except Exception as e:
